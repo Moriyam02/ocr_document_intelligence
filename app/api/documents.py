@@ -13,7 +13,7 @@ from app.repositories.document_repository import DocumentRepository
 from app.services.export_service import ExportService
 from app.services.jobs import job_manager, process_document_background
 from app.services.ocr.consensus import ConsensusEngine
-from app.services.ocr.routing import RoutingEngine
+from app.services.ocr.engine import RoutingEngine
 from app.services.preprocessing.pipeline import ImagePreprocessor
 from app.services.preprocessing.quality import QualityAnalyzer
 from app.services.validation import DataValidator

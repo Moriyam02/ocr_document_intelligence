@@ -2,6 +2,7 @@ import os
 import logging
 import time
 from typing import Dict, Any
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -25,13 +26,41 @@ class PaddleOCREngine:
             self.ocr = PaddleOCR(
                 use_angle_cls=True,
                 lang=lang,
-                enable_mkldnn=False
+                enable_mkldnn=False,
+                show_log=False
             )
             self.available = True
             logger.info("PaddleOCR engine initialized successfully (enable_mkldnn=False).")
         except Exception as e:
             self.available = False
             logger.error(f"Failed to initialize PaddleOCR: {e}")
+
+    def _prepare_image_input(self, image: Any) -> np.ndarray:
+        """Ensures the image is converted into a standard 3-channel OpenCV array."""
+        if isinstance(image, Image.Image):
+            # Convert PIL image (including RGBA/L) to RGB array, then to OpenCV BGR
+            rgb_np = np.array(image.convert("RGB"))
+            return cv2.cvtColor(rgb_np, cv2.COLOR_RGB2BGR)
+        
+        elif isinstance(image, np.ndarray):
+            # Single-channel grayscale
+            if len(image.shape) == 2:
+                return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            # 4-channel RGBA
+            elif len(image.shape) == 3 and image.shape[2] == 4:
+                return cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+            # 3-channel (assume standard matrix)
+            return image
+        
+        elif isinstance(image, str):
+            # If path is provided directly
+            img_bgr = cv2.imread(image)
+            if img_bgr is None:
+                raise ValueError(f"Could not load image from path: {image}")
+            return img_bgr
+            
+        else:
+            raise TypeError(f"Unsupported image type provided to PaddleOCR: {type(image)}")
 
     def process_image(self, image: Any) -> Dict[str, Any]:
         """Runs PaddleOCR and returns standard OCR response format across engines."""
@@ -49,18 +78,17 @@ class PaddleOCREngine:
             }
 
         try:
-            if isinstance(image, Image.Image):
-                img_np = np.array(image)
-            else:
-                img_np = image
+            # Prepare image matrix safely
+            cv2_img = self._prepare_image_input(image)
 
-            results = self.ocr.ocr(img_np)
+            # Run PaddleOCR inference
+            results = self.ocr.ocr(cv2_img)
 
             raw_text_lines = []
             words = []
             confidences = []
 
-            if results and results[0]:
+            if results and len(results) > 0 and results[0]:
                 for line in results[0]:
                     if not line:
                         continue

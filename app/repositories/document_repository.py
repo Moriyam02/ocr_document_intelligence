@@ -2,12 +2,7 @@ import uuid
 import logging
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
-
-# Safe import for the model class inside app/models/document.py
-try:
-    from app.models.document import Document
-except ImportError:
-    from app.models.document import DocumentModel as Document
+from app.models.document import Document
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +14,12 @@ class DocumentRepository:
         self.db = db
 
     def create_document(self, filename: str, **kwargs) -> Document:
-        """Creates a new document record in PENDING status.
-        
-        Using **kwargs allows it to safely receive extra params like content_type/file_size.
-        """
+        """Creates a new document record in PENDING status."""
         doc_id = str(uuid.uuid4())
         doc = Document(
             id=doc_id,
             filename=filename,
+            file_type=kwargs.get("content_type", "application/pdf"),
             status="PENDING",
             progress=0.0
         )
@@ -38,6 +31,10 @@ class DocumentRepository:
     def get_document(self, doc_id: str) -> Optional[Document]:
         """Retrieves a document by its primary key ID."""
         return self.db.query(Document).filter(Document.id == doc_id).first()
+
+    def list_documents(self) -> List[Document]:
+        """Retrieves all documents."""
+        return self.db.query(Document).all()
 
     def update_status(
         self, 
@@ -69,12 +66,15 @@ class DocumentRepository:
         """Saves final 3-engine processing results to the database."""
         doc = self.get_document(doc_id)
         if doc:
+            doc.total_pages = total_pages
             doc.status = routing_decision.get("status", "COMPLETED")
-            doc.progress = 1.0
+            doc.progress = 100.0
             doc.pages_data = pages_data
             doc.consensus_data = consensus_data
             doc.validation_issues = validation_issues
             doc.routing_decision = routing_decision
+            doc.overall_confidence = routing_decision.get("overall_confidence", 0.0)
+            doc.routing_reason = routing_decision.get("routing_reason", "")
             self.db.commit()
             self.db.refresh(doc)
         return doc
@@ -89,10 +89,12 @@ class DocumentRepository:
             "document_id": doc.id,
             "filename": doc.filename,
             "status": doc.status,
-            "progress": doc.progress,
-            "pages_data": getattr(doc, "pages_data", []),
-            "consensus_data": getattr(doc, "consensus_data", {}),
-            "validation_issues": getattr(doc, "validation_issues", []),
-            "routing_decision": getattr(doc, "routing_decision", {}),
+            "progress": getattr(doc, "progress", 100.0),
+            "overall_confidence": getattr(doc, "overall_confidence", 0.0),
+            "routing_reason": getattr(doc, "routing_reason", None),
+            "pages_data": getattr(doc, "pages_data", []) or [],
+            "consensus_data": getattr(doc, "consensus_data", {}) or {},
+            "validation_issues": getattr(doc, "validation_issues", []) or [],
+            "routing_decision": getattr(doc, "routing_decision", {}) or {},
             "error_message": getattr(doc, "error_message", None)
         }

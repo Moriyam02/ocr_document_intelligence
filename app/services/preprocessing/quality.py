@@ -49,13 +49,13 @@ class QualityAnalyzer:
         # Estimated DPI assuming standard 8.5-inch document width
         estimated_dpi = round((w / 8.5), 1)
 
-        # Determine recommended preprocessing profile based on quality thresholds
+        # Determine recommended preprocessing profile based on refined quality thresholds
         recommended_profile = "BASIC"
         if abs(skew_angle) > 2.0:
             recommended_profile = "SKEWED"
-        elif blur_score < 100.0:
+        elif blur_score < 100.0 or estimated_dpi < 120:
             recommended_profile = "SMALL_TEXT"
-        elif brightness < 80.0 or contrast < 40.0:
+        elif brightness < 60.0 or contrast < 25.0:  # Adjusted contrast threshold from 40.0 to 25.0 to prevent false triggers
             recommended_profile = "LOW_LIGHT"
 
         # Determine overall quality label according to spec

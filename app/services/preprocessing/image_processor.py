@@ -29,12 +29,20 @@ class ImagePreprocessor:
     def process(
         self, image_np: np.ndarray, profile: str, skew_angle: float = 0.0
     ) -> np.ndarray:
-        """Applies targeted preprocessing pipelines based on quality evaluation (Section 4.3)."""
+        """Applies targeted preprocessing pipelines optimized for neural-net OCR engines."""
         # Ensure grayscale
         if len(image_np.shape) == 3:
             gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
         else:
             gray = image_np.copy()
+
+        # Automatic Upscaling for low-resolution images (< 1200px width)
+        h, w = gray.shape[:2]
+        if w < 1200:
+            scale_factor = 2.0
+            gray = cv2.resize(
+                gray, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC
+            )
 
         # Execute deskew if needed
         if abs(skew_angle) > 2.0 and abs(skew_angle) != 90.0:
@@ -42,23 +50,13 @@ class ImagePreprocessor:
 
         # Profile selection pipeline
         if profile == "low_light":
-            enhanced = self.apply_clahe(gray)
-            return cv2.adaptiveThreshold(
-                enhanced,
-                255,
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY,
-                11,
-                2,
-            )
+            # Return high-contrast grayscale instead of binary adaptive thresholding
+            return self.apply_clahe(gray)
 
         elif profile == "small_text":
-            # Scale up 2x and apply sharpening
-            scaled = cv2.resize(
-                gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC
-            )
+            # Sharpening kernel
             kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-            return cv2.filter2D(scaled, -1, kernel)
+            return cv2.filter2D(gray, -1, kernel)
 
         elif profile == "skewed":
             return cv2.fastNlMeansDenoising(gray, h=10)

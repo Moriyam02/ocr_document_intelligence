@@ -24,55 +24,52 @@ class ImagePreprocessor:
         profile = (profile or "BASIC").upper()
 
         try:
+            # 1. Automatic resolution scaling for low-resolution/small images (< 1200px width)
+            h, w = img_np.shape[:2]
+            if w < 1200 and profile not in ("ORIGINAL", "NONE"):
+                scale_factor = 2.0
+                img_np = cv2.resize(
+                    img_np, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC
+                )
+
             if profile in ("ORIGINAL", "NONE"):
-                # Return image as-is without transformations
                 processed_np = img_np
 
             elif profile == "SKEWED":
-                # Deskewing and perspective/rotation correction
                 processed_np = self._deskew_image(img_np)
 
             elif profile == "LOW_LIGHT":
-                # Enhance contrast using CLAHE + adaptive thresholding
+                # Enhance contrast with CLAHE while preserving grayscale gradients for neural OCR
                 if len(img_np.shape) == 3:
                     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
                 else:
                     gray = img_np
-                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
                 enhanced = clahe.apply(gray)
-                thresh = cv2.adaptiveThreshold(
-                    enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
-                )
-                processed_np = cv2.cvtColor(thresh, cv2.COLOR_GRAY2RGB)
+                processed_np = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
 
             elif profile == "SMALL_TEXT":
-                # Upscale resolution and apply sharpening kernel
-                h, w = img_np.shape[:2]
-                upscaled = cv2.resize(img_np, (int(w * 1.5), int(h * 1.5)), interpolation=cv2.INTER_CUBIC)
-                
-                if len(upscaled.shape) == 3:
-                    gray = cv2.cvtColor(upscaled, cv2.COLOR_RGB2GRAY)
+                if len(img_np.shape) == 3:
+                    gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
                 else:
-                    gray = upscaled
+                    gray = img_np
 
                 kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
                 sharpened = cv2.filter2D(gray, -1, kernel)
                 processed_np = cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB)
 
             elif profile == "NOISY_SCAN":
-                # Apply median filtering, bilateral noise reduction, and morphological opening
                 if len(img_np.shape) == 3:
                     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
                 else:
                     gray = img_np
                 median = cv2.medianBlur(gray, 3)
                 filtered = cv2.bilateralFilter(median, 9, 75, 75)
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-                opened = cv2.morphologyEx(filtered, cv2.MORPH_OPEN, kernel)
-                processed_np = cv2.cvtColor(opened, cv2.COLOR_GRAY2RGB)
+                processed_np = cv2.cvtColor(filtered, cv2.COLOR_GRAY2RGB)
 
             else:
-                # BASIC profile: Grayscale conversion, mild denoising, and contrast normalization
+                # BASIC profile
                 if len(img_np.shape) == 3:
                     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
                 else:
@@ -85,7 +82,6 @@ class ImagePreprocessor:
 
         except Exception as e:
             logger.error(f"Error executing preprocessing profile {profile}: {e}")
-            # Fallback: return original image if preprocessing fails
             return image if isinstance(image, Image.Image) else Image.fromarray(img_np)
 
     def apply_profile(self, image: Image.Image, profile: str = "BASIC") -> Image.Image:
@@ -93,7 +89,6 @@ class ImagePreprocessor:
         return self.preprocess(image, profile)
 
     def _deskew_image(self, img_np: np.ndarray) -> np.ndarray:
-        """Helper method to calculate skew angle and rotate image straight."""
         if len(img_np.shape) == 3:
             gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
         else:
@@ -113,9 +108,8 @@ class ImagePreprocessor:
                 h, w = img_np.shape[:2]
                 center = (w // 2, h // 2)
                 M = cv2.getRotationMatrix2D(center, angle, 1.0)
-                rotated = cv2.warpAffine(
+                return cv2.warpAffine(
                     img_np, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
                 )
-                return rotated
 
         return img_np

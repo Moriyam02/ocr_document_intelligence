@@ -5,7 +5,8 @@ from typing import Optional, List, Any
 import cv2
 import numpy as np
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, Depends, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -15,6 +16,16 @@ from app.core.database import SessionLocal, engine, Base
 from app.repositories.document_repository import DocumentRepository
 from app.services.jobs import job_manager, process_document_background
 from app.services.export_service import ExportService
+
+# Import Document model directly to prevent repository method missing errors
+try:
+    from app.models.document import Document
+except ImportError:
+    # Fallback import if model is located under core or db
+    try:
+        from app.models import Document
+    except ImportError:
+        Document = None
 
 # Service Imports
 from app.services.preprocessing.quality import QualityAnalyzer
@@ -42,6 +53,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Mount Static Directory for Frontend Assets ---
+if os.path.exists("app/static"):
+    app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
 def get_db():
@@ -86,6 +101,10 @@ class DocumentReviewRequest(BaseModel):
 
 @app.get("/")
 def read_root():
+    """Serves the Section 6 Frontend Review Dashboard UI if template exists, or fallback JSON."""
+    template_path = os.path.join("app", "templates", "index.html")
+    if os.path.exists(template_path):
+        return FileResponse(template_path)
     return {"message": "Asynchronous Document Intelligence API is active"}
 
 
@@ -191,7 +210,7 @@ def get_document_status(doc_id: str, db: Session = Depends(get_db)):
         "document_id": doc.id,
         "filename": doc.filename,
         "status": doc.status,
-        "progress": getattr(doc, "progress", 100 if doc.status == "COMPLETED" else 0),
+        "progress": getattr(doc, "progress", 100 if doc.status in ["COMPLETED", "APPROVED", "REJECTED"] else 0),
         "overall_confidence": getattr(doc, "overall_confidence", None),
         "routing_reason": getattr(doc, "routing_reason", None),
         "error_message": getattr(doc, "error_message", None)
@@ -272,7 +291,6 @@ def export_document(doc_id: str, format: str = "json", db: Session = Depends(get
         raise HTTPException(status_code=404, detail="Processing results not found")
 
     if format.lower() == "csv":
-        # Format payloads into structured CSV string using ExportService
         payload = results if isinstance(results, dict) else {"document_id": doc_id, "pages": results}
         csv_data = ExportService.generate_csv(payload)
         return StreamingResponse(
@@ -288,15 +306,23 @@ def export_document(doc_id: str, format: str = "json", db: Session = Depends(get
 
 @app.get("/documents")
 def list_documents(db: Session = Depends(get_db)):
-    """List all documents with processing status."""
+    """List all documents with processing status safely handling repo or ORM calls."""
     repo = DocumentRepository(db)
-    docs = repo.list_documents()
+    
+    # Check repository method first, fallback to ORM model query
+    if hasattr(repo, "list_documents") and callable(getattr(repo, "list_documents")):
+        docs = repo.list_documents()
+    elif Document is not None:
+        docs = db.query(Document).all()
+    else:
+        docs = []
+
     return [
         {
-            "document_id": d.id,
-            "filename": d.filename,
-            "status": d.status,
-            "created_at": getattr(d, "created_at", None)
+            "document_id": getattr(d, "id", str(d)),
+            "filename": getattr(d, "filename", "Unknown"),
+            "status": getattr(d, "status", "UNKNOWN"),
+            "created_at": str(getattr(d, "created_at", "")) if getattr(d, "created_at", None) else None
         }
         for d in docs
     ]

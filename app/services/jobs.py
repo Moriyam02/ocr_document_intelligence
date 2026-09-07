@@ -9,8 +9,6 @@ from app.core.database import SessionLocal
 from app.repositories.document_repository import DocumentRepository
 from app.services.preprocessing.quality import QualityAnalyzer
 from app.services.preprocessing.pipeline import ImagePreprocessor
-
-# Extraction services module imports
 from app.services.extraction.parser import FieldExtractor
 from app.services.extraction.table import TableExtractor
 from app.services.extraction.layout import LayoutAnalyzer
@@ -66,16 +64,12 @@ def process_document_background(
     data_validator: Any,
     routing_engine: Any
 ):
-    """
-    Background task executing PDF rendering, quality assessment, image preprocessing, 
-    multi-engine OCR, field & table extraction, consensus, validation, and routing.
-    """
+    """Background task executing multi-engine OCR and saving structured results."""
     logger.info(f"[JOB START] Processing Document ID: {doc_id}")
 
     db = SessionLocal()
     repo = DocumentRepository(db)
 
-    # Instantiate quality analyzer, image processor, and extraction modules
     qa = quality_analyzer or QualityAnalyzer()
     ip = image_processor or ImagePreprocessor()
     field_extractor = FieldExtractor()
@@ -87,74 +81,31 @@ def process_document_background(
         if not file_bytes:
             raise ValueError(f"No file bytes found for doc_id: {doc_id}")
 
-        # 1. Render PDF pages in-memory using PyMuPDF
-        logger.info("[INFO] Rendering document pages via PyMuPDF...")
         pil_images = render_pdf_to_images(file_bytes)
         total_pages = len(pil_images)
-        logger.info(f"[INFO] Successfully rendered {total_pages} page(s).")
 
         pages_data = []
 
-        # 2. Process each page
         for idx, page_img in enumerate(pil_images, start=1):
-            logger.info(f"[INFO] Assessing Quality and Preprocessing Page {idx}...")
-
-            # Run Image Quality Assessment
             quality_report = qa.analyze(page_img)
             recommended_profile = quality_report.get("recommended_profile", "BASIC")
 
-            logger.info(
-                f"[QUALITY] Page {idx} - Label: {quality_report.get('quality_label')} | "
-                f"Blur: {quality_report.get('blur_score')} | Recommended Profile: {recommended_profile}"
-            )
-
-            # Apply Image Preprocessing Pipeline
             processed_page_img = ip.preprocess(page_img, profile=recommended_profile)
-
-            # Run Multi-Engine OCR Consensus
-            logger.info(f"[INFO] Running OCR Consensus on Preprocessed Page {idx}...")
             engine_outputs = consensus_engine.run_all_engines(processed_page_img)
 
-            # Extract extended key-value fields per OCR engine using FieldExtractor
             extracted_fields_by_engine: Dict[str, Dict[str, Any]] = {}
             for engine_name, output in engine_outputs.items():
                 parsed_schema = field_extractor.parse_fields(output)
                 extracted_fields_by_engine[engine_name] = parsed_schema.model_dump()
 
-            # Extract line-item tables per OCR engine using TableExtractor
             extracted_line_items_by_engine: Dict[str, List[Dict[str, Any]]] = {}
             for engine_name, output in engine_outputs.items():
                 items = table_extractor.extract_line_items_from_engine_output(output)
                 extracted_line_items_by_engine[engine_name] = [item.model_dump() for item in items]
 
-            # Compute Field Consensus across OCR engines
             field_consensus = consensus_engine.compute_field_consensus(
                 engine_outputs, extracted_fields_by_engine
             )
-
-            # Convert page to OpenCV format for visual layout annotation
-            cv_img = pil_to_cv2(processed_page_img if isinstance(processed_page_img, Image.Image) else page_img)
-            annotations = []
-            
-            # Draw spatial bounding box overlays from primary engine output tokens
-            primary_output = engine_outputs.get("tesseract", list(engine_outputs.values())[0] if engine_outputs else {})
-            if isinstance(primary_output, dict):
-                tokens = primary_output.get("tokens", primary_output.get("words", []))
-                for tok in tokens:
-                    bbox = tok.get("bbox")
-                    text = tok.get("text", "").strip()
-                    if bbox and len(bbox) == 4 and text:
-                        norm_bbox = layout_analyzer.normalize_bbox(bbox, (cv_img.shape[1], cv_img.shape[0]))
-                        annotations.append(
-                            layout_analyzer.FieldAnnotation(
-                                field_name="token",
-                                text=text,
-                                bbox=norm_bbox,
-                                confidence=float(tok.get("confidence", 0.9))
-                            )
-                        )
-            
-            annotated_img = layout_analyzer.render_bounding_boxes(cv_img, annotations)
 
             pages_data.append({
                 "page": idx,
@@ -166,19 +117,17 @@ def process_document_background(
                 "field_consensus": field_consensus,
             })
 
-        # 3. Run Data Validation Rules
-        logger.info("[INFO] Running Data Validation rules...")
+        # Run Data Validation Rules
         validation_issues = data_validator.validate(pages_data)
 
-        # 4. Evaluate Routing & Build Consolidated Consensus Data
-        logger.info("[INFO] Evaluating Confidence & Routing Decision...")
+        # Consolidate Consensus
         consolidated_consensus = {}
         for p in pages_data:
             consolidated_consensus.update(p.get("field_consensus", {}))
 
         routing_decision = routing_engine.evaluate(consolidated_consensus, validation_issues)
 
-        # 5. Persist processing output passing all positional arguments
+        # Persist structured output to database
         repo.save_processing_results(
             doc_id,
             total_pages,
@@ -188,29 +137,11 @@ def process_document_background(
             routing_decision
         )
 
-        # Update document routing status
-        doc = repo.get_document(doc_id)
-        if doc:
-            doc.status = routing_decision.get("status", "COMPLETED")
-            doc.overall_confidence = routing_decision.get("overall_confidence", 0.0)
-            doc.routing_reason = routing_decision.get("routing_reason", "")
-            db.commit()
-
-        logger.info(
-            f"[JOB COMPLETE] Successfully processed Document ID: {doc_id} | "
-            f"Status: {routing_decision.get('status')}"
-        )
+        logger.info(f"[JOB COMPLETE] Document ID: {doc_id} processed successfully.")
 
     except Exception as e:
-        logger.error(f"[JOB FAILED] Document ID {doc_id} failed with error: {str(e)}", exc_info=True)
-        try:
-            doc = repo.get_document(doc_id)
-            if doc:
-                doc.status = "FAILED"
-                doc.error_message = str(e)
-                db.commit()
-        except Exception as db_err:
-            logger.error(f"Failed to record failure state in database: {db_err}")
+        logger.error(f"[JOB FAILED] Document ID {doc_id}: {str(e)}", exc_info=True)
+        repo.update_status(doc_id, status="FAILED", error=str(e))
     finally:
         db.close()
         job_manager.remove_file(doc_id)
