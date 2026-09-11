@@ -1,175 +1,256 @@
+import os
+# Disable problematic C++ execution optimizations on Windows CPU
+os.environ["FLAGS_use_onednn"] = "0"
+os.environ["FLAGS_enable_pir_api"] = "0"
+
 import logging
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
-from collections import Counter
 from PIL import Image
 
-from app.services.ocr.tesseract_engine import TesseractEngine
-from app.services.ocr.easyocr_engine import EasyOCREngine
-from app.services.ocr.paddle_engine import PaddleOCREngine
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 class OCRConsensusEngine:
+    """
+    Coordinates multi-engine OCR execution (Tesseract, EasyOCR, PaddleOCR)
+    and computes consensus across both scalar fields and structured line items.
+    """
 
-    def __init__(self, executor_threads: int = 3):
-        """Initializes all 3 OCR engines required by Section 4.4."""
-        self.tesseract = TesseractEngine()
-        self.easyocr = EasyOCREngine()
-        self.paddleocr = PaddleOCREngine()
-        self.executor = ThreadPoolExecutor(max_workers=executor_threads)
-
-    # --- Async Parallel Engine Execution ---
-
-    def _run_single_engine(self, engine_instance: Any, engine_name: str, image: Image.Image) -> Dict[str, Any]:
-        """Safely executes a single OCR engine wrapper."""
-        try:
-            # Handle both process_image and extract_text style returns
-            if hasattr(engine_instance, "process_image"):
-                res = engine_instance.process_image(image)
-                if isinstance(res, dict):
-                    return res
-                return {"engine": engine_name, "raw_text": str(res), "status": "SUCCESS", "error": None}
-            elif hasattr(engine_instance, "extract_text"):
-                res = engine_instance.extract_text(image)
-                return {"engine": engine_name, "raw_text": str(res), "status": "SUCCESS", "error": None}
-            else:
-                raise AttributeError(f"{engine_name} missing extraction method")
-        except Exception as e:
-            logger.error(f"{engine_name} execution error: {e}")
-            return {
-                "engine": engine_name,
-                "raw_text": "",
-                "words": [],
-                "status": "ERROR",
-                "error": str(e),
-            }
-
-    async def run_all_engines_async(self, image: Image.Image) -> Dict[str, Any]:
-        """Runs Tesseract, EasyOCR, and PaddleOCR concurrently in separate threads."""
-        loop = asyncio.get_event_loop()
-        
-        futures = {
-            "tesseract": loop.run_in_executor(self.executor, self._run_single_engine, self.tesseract, "tesseract", image),
-            "easyocr": loop.run_in_executor(self.executor, self._run_single_engine, self.easyocr, "easyocr", image),
-            "paddleocr": loop.run_in_executor(self.executor, self._run_single_engine, self.paddleocr, "paddleocr", image),
+    def __init__(self, engine_weights: Optional[Dict[str, float]] = None):
+        # Default engine weighting based on extraction accuracy
+        self.engine_weights = engine_weights or {
+            "paddleocr": 0.40,
+            "tesseract": 0.35,
+            "easyocr": 0.25,
         }
 
-        results = await asyncio.gather(*futures.values())
-        return dict(zip(futures.keys(), results))
-
     def run_all_engines(self, image: Image.Image) -> Dict[str, Any]:
-        """Synchronous wrapper that executes engines concurrently using threads."""
+        """
+        Executes OCR processing across available OCR engines on a single PIL image.
+        Returns raw text, detected boxes, and an average per-engine confidence
+        score (0.0-1.0) for each engine, where the underlying library exposes one.
+        """
+        engine_outputs: Dict[str, Any] = {}
+
+        # 1. Tesseract OCR
         try:
-            loop = asyncio.get_running_loop()
-            return loop.run_until_complete(self.run_all_engines_async(image))
-        except RuntimeError:
-            # Fallback when no active async loop exists
-            return {
-                "tesseract": self._run_single_engine(self.tesseract, "tesseract", image),
-                "easyocr": self._run_single_engine(self.easyocr, "easyocr", image),
-                "paddleocr": self._run_single_engine(self.paddleocr, "paddleocr", image),
+            import pytesseract
+            raw_text = pytesseract.image_to_string(image)
+
+            # FIX/ADD: image_to_string alone gives no confidence figure.
+            # A second lightweight call via image_to_data exposes per-token
+            # confidences, which we average into a single engine-level score.
+            conf_score = 0.0
+            try:
+                data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+                confs = [
+                    float(c) for c in data.get("conf", [])
+                    if str(c) not in ("-1",) and float(c) >= 0
+                ]
+                if confs:
+                    conf_score = round((sum(confs) / len(confs)) / 100.0, 2)
+            except Exception as conf_err:
+                logger.warning(f"[OCR CONSENSUS] Tesseract confidence lookup failed: {conf_err}")
+
+            engine_outputs["tesseract"] = {
+                "status": "SUCCESS",
+                "text": raw_text,
+                "raw_text": raw_text,
+                "boxes": [],
+                "confidence": conf_score,
+                "error": None
+            }
+        except Exception as e:
+            logger.warning(f"[OCR CONSENSUS] Tesseract engine failed: {e}")
+            engine_outputs["tesseract"] = {
+                "status": "FAILED",
+                "text": "",
+                "raw_text": "",
+                "boxes": [],
+                "confidence": 0.0,
+                "error": str(e)
             }
 
-    # Aliases to maintain compatibility with existing background job routines
-    def process(self, image: Image.Image) -> Dict[str, Any]:
-        return self.run_all_engines(image)
+        # 2. EasyOCR
+        try:
+            import easyocr
+            import numpy as np
+            reader = easyocr.Reader(['en'], gpu=False)
+            results = reader.readtext(np.array(image))
+            extracted_text = "\n".join([res[1] for res in results])
 
-    def process_page(self, image: Image.Image) -> Dict[str, Any]:
-        return self.run_all_engines(image)
+            # ADD: average the per-detection confidence EasyOCR already returns.
+            confs = [float(res[2]) for res in results if len(res) > 2]
+            conf_score = round(sum(confs) / len(confs), 2) if confs else 0.0
 
-    # --- Smart Normalization & Field Consensus ---
+            engine_outputs["easyocr"] = {
+                "status": "SUCCESS",
+                "text": extracted_text,
+                "raw_text": extracted_text,
+                "boxes": [res[0] for res in results],
+                "confidence": conf_score,
+                "error": None
+            }
+        except Exception as e:
+            logger.warning(f"[OCR CONSENSUS] EasyOCR engine failed: {e}")
+            engine_outputs["easyocr"] = {
+                "status": "FAILED",
+                "text": "",
+                "raw_text": "",
+                "boxes": [],
+                "confidence": 0.0,
+                "error": str(e)
+            }
 
-    @staticmethod
-    def _normalize_field_value(field_name: str, val: Any) -> Optional[str]:
-        """Standardizes values across formatting variations (e.g. currency, hyphens, floats)."""
-        if val is None:
-            return None
+        # 3. PaddleOCR
+        try:
+            from paddleocr import PaddleOCR
+            import numpy as np
 
-        s_val = str(val).strip().lower()
-        if s_val in ("", "none", "null"):
-            return None
+            # Disable oneDNN via instance parameter if supported by version
+            ocr_engine = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
+            results = ocr_engine.ocr(np.array(image))
 
-        # Numbers / Totals (e.g., "$25,186.00" -> "25186.00")
-        if any(term in field_name.lower() for term in ["total", "subtotal", "tax", "amount"]):
-            try:
-                clean_num = s_val.replace("$", "").replace("₹", "").replace(",", "")
-                return f"{float(clean_num):.2f}"
-            except ValueError:
-                return s_val
+            lines = []
+            scores = []
+            if results and len(results) > 0 and results[0] is not None:
+                first_res = results[0]
+                if isinstance(first_res, dict):
+                    lines = first_res.get("rec_text") or first_res.get("rec_texts") or []
+                    raw_scores = first_res.get("rec_score") or first_res.get("rec_scores") or []
+                    scores = [float(s) for s in raw_scores]
+                elif isinstance(first_res, list):
+                    for line in first_res:
+                        if line and len(line) > 1 and isinstance(line[1], (list, tuple)):
+                            lines.append(line[1][0])
+                            if len(line[1]) > 1:
+                                try:
+                                    scores.append(float(line[1][1]))
+                                except (TypeError, ValueError):
+                                    pass
 
-        # Invoice codes (e.g., "INV-2026-0423" -> "inv20260423")
-        if "invoice" in field_name.lower() or "number" in field_name.lower():
-            return s_val.replace("-", "").replace(" ", "").replace("#", "")
+            extracted_text = "\n".join([str(l).strip() for l in lines if str(l).strip()])
+            conf_score = round(sum(scores) / len(scores), 2) if scores else 0.0
 
-        return s_val
+            engine_outputs["paddleocr"] = {
+                "status": "SUCCESS",
+                "text": extracted_text,
+                "raw_text": extracted_text,
+                "boxes": [],
+                "confidence": conf_score,
+                "error": None
+            }
+        except Exception as e:
+            logger.warning(f"[OCR CONSENSUS] PaddleOCR engine failed: {e}")
+            engine_outputs["paddleocr"] = {
+                "status": "FAILED",
+                "text": "",
+                "raw_text": "",
+                "boxes": [],
+                "confidence": 0.0,
+                "error": str(e)
+            }
+
+        return engine_outputs
 
     def compute_field_consensus(
-        self, engine_outputs: Dict[str, Any], extracted_candidates: Dict[str, Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """Compares extracted candidate values across Tesseract, EasyOCR, and PaddleOCR."""
-        field_consensus = {}
+        self,
+        engine_outputs: Dict[str, Any],
+        extracted_candidates: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Computes field-level consensus matching the dictionary structure consumed by jobs.py.
+        """
+        consensus_result: Dict[str, Dict[str, Any]] = {}
 
-        for field_name, candidates in extracted_candidates.items():
-            if not candidates:
-                continue
-
-            value_groups: Dict[str, Dict[str, Any]] = {}
-            
-            # 1. Normalize and group votes
-            for engine, val in candidates.items():
-                norm_val = self._normalize_field_value(field_name, val)
-                if not norm_val:
-                    continue
-
-                if norm_val not in value_groups:
-                    value_groups[norm_val] = {
-                        "original_value": val,
-                        "engines": [engine],
-                        "count": 1,
-                    }
-                else:
-                    value_groups[norm_val]["engines"].append(engine)
-                    value_groups[norm_val]["count"] += 1
-
-            if not value_groups:
-                field_consensus[field_name] = {
+        for field_name, engine_values in extracted_candidates.items():
+            if not engine_values:
+                consensus_result[field_name] = {
                     "value": None,
                     "confidence": 0.0,
-                    "source": "NONE",
-                    "agreement_count": 0,
-                    "flagged_for_review": True,
+                    "sources": [],
                 }
                 continue
 
-            # 2. Find winning value
-            best_match = max(value_groups.values(), key=lambda x: x["count"])
+            if field_name == "line_items":
+                consensus_result[field_name] = self._compute_line_items_consensus(engine_values)
+            else:
+                consensus_result[field_name] = self._compute_scalar_consensus(engine_values)
 
-            # 3. Calculate Active Engine Coverage
-            total_active_engines = len([
-                e for e, out in engine_outputs.items()
-                if isinstance(out, dict) and out.get("error") is None
-            ])
-            if total_active_engines == 0:
-                total_active_engines = len(engine_outputs)
+        return consensus_result
 
-            # 4. Weighted Confidence Scoring
-            valid_agreement_ratio = best_match["count"] / len(candidates)
-            coverage_ratio = best_match["count"] / total_active_engines
+    def _compute_scalar_consensus(self, engine_values: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Calculates weighted consensus vote for scalar fields (strings, dates, floats).
+        """
+        weighted_votes: Dict[Any, float] = {}
+        value_sources: Dict[Any, List[str]] = {}
 
-            confidence = round((0.75 * valid_agreement_ratio) + (0.25 * coverage_ratio), 2)
-            
-            # Require at least 2 agreeing engines or >= 0.80 confidence to pass without review
-            needs_review = best_match["count"] < 2 or confidence < 0.80
+        for engine, value in engine_values.items():
+            if value is None or value == "":
+                continue
 
-            field_consensus[field_name] = {
-                "value": best_match["original_value"],
-                "confidence": confidence,
-                "source": ", ".join(best_match["engines"]),
-                "agreement_count": best_match["count"],
-                "flagged_for_review": needs_review,
+            weight = self.engine_weights.get(engine.lower(), 0.3)
+            vote_key = str(value).strip().lower() if isinstance(value, str) else value
+
+            weighted_votes[vote_key] = weighted_votes.get(vote_key, 0.0) + weight
+            if vote_key not in value_sources:
+                value_sources[vote_key] = []
+            value_sources[vote_key].append(engine)
+
+        if not weighted_votes:
+            return {"value": None, "confidence": 0.0, "sources": []}
+
+        best_vote_key = max(weighted_votes, key=weighted_votes.get)
+        total_possible_weight = sum(
+            self.engine_weights.get(eng.lower(), 0.3) for eng in engine_values.keys()
+        )
+        confidence = round(weighted_votes[best_vote_key] / max(total_possible_weight, 1.0), 2)
+
+        winner_source = value_sources[best_vote_key][0]
+        original_value = engine_values[winner_source]
+
+        return {
+            "value": original_value,
+            "confidence": min(confidence, 1.0),
+            "sources": value_sources[best_vote_key],
+        }
+
+    def _compute_line_items_consensus(self, engine_values: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Evaluates extracted line item candidate lists and selects the most accurate and complete item array.
+        """
+        valid_candidates: List[Dict[str, Any]] = []
+
+        for engine, items in engine_values.items():
+            if isinstance(items, list) and len(items) > 0:
+                engine_weight = self.engine_weights.get(engine.lower(), 0.3)
+                item_count_score = min(len(items) / 5.0, 1.0)
+                score = round((engine_weight * 0.7) + (item_count_score * 0.3), 2)
+
+                valid_candidates.append({
+                    "engine": engine,
+                    "items": items,
+                    "score": score,
+                    "item_count": len(items)
+                })
+
+        if not valid_candidates:
+            return {
+                "value": [],
+                "confidence": 0.0,
+                "sources": [],
             }
 
-        return field_consensus
+        best_candidate = max(valid_candidates, key=lambda x: (x["item_count"], x["score"]))
+
+        supporting_sources = [c["engine"] for c in valid_candidates]
+        consensus_confidence = round(
+            sum(self.engine_weights.get(e.lower(), 0.3) for e in supporting_sources), 2
+        )
+
+        return {
+            "value": best_candidate["items"],
+            "confidence": min(consensus_confidence, 1.0),
+            "sources": supporting_sources,
+        }

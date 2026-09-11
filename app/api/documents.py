@@ -26,6 +26,7 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 class DocumentUploadResponse(BaseModel):
     document_id: str
     filename: str
+    status: str
     message: str
 
 
@@ -61,27 +62,60 @@ class DocumentReviewRequest(BaseModel):
 
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
-    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., description="The invoice PDF or image file to process."),
+    auto_process: bool = True,
     db: Session = Depends(get_db)
 ):
-    """Upload image/PDF documents."""
-    if not file.filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
-        raise HTTPException(status_code=400, detail="Unsupported file format.")
+    """
+    Upload image/PDF document.
+    Optionally starts background processing immediately if auto_process=True.
+    """
+    if not file.filename or not file.filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
+        raise HTTPException(
+            status_code=400, 
+            detail="Unsupported file format. Please upload a PDF, PNG, JPG, or JPEG image."
+        )
 
     doc_id = str(uuid.uuid4())
     file_bytes = await file.read()
 
-    # Store file bytes in job manager in-memory store
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    # 1. Store file bytes in job manager in-memory store
     job_manager.store_file(doc_id, file_bytes)
 
-    # Save initial record in database
+    # 2. Save initial record in database
     repo = DocumentRepository(db)
     repo.create_document(doc_id=doc_id, filename=file.filename)
+
+    initial_status = "PENDING"
+
+    # 3. Trigger immediate processing if auto_process is enabled
+    if auto_process:
+        doc = repo.get_document(doc_id)
+        if doc:
+            doc.status = "PROCESSING"
+            db.commit()
+            initial_status = "PROCESSING"
+
+        background_tasks.add_task(
+            process_document_background,
+            doc_id=doc_id,
+            poppler_path=None,
+            quality_analyzer=QualityAnalyzer(),
+            image_processor=ImagePreprocessor(),
+            consensus_engine=ConsensusEngine(),
+            data_validator=DataValidator(),
+            routing_engine=RoutingEngine()
+        )
 
     return DocumentUploadResponse(
         document_id=doc_id,
         filename=file.filename,
-        message="Document uploaded successfully. Ready for processing."
+        status=initial_status,
+        message="Document uploaded successfully. Processing started." if auto_process else "Document uploaded successfully. Ready for processing."
     )
 
 
@@ -91,7 +125,7 @@ async def process_document(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    """Start asynchronous background processing pipeline."""
+    """Manually trigger asynchronous background processing pipeline for a queued document."""
     repo = DocumentRepository(db)
     doc = repo.get_document(doc_id)
     if not doc:
@@ -143,7 +177,7 @@ def get_document_result(doc_id: str, db: Session = Depends(get_db)):
     repo = DocumentRepository(db)
     result = repo.get_processing_results(doc_id)
     if not result:
-        raise HTTPException(status_code=404, detail="Processing results not found.")
+        raise HTTPException(status_code=404, detail="Processing results not found or still processing.")
     return result
 
 
@@ -154,7 +188,7 @@ def get_document_image(doc_id: str, page: int = 1, annotated: bool = True, db: S
     if not file_bytes:
         raise HTTPException(status_code=404, detail="Image file not found.")
 
-    # Generate placeholder image canvas for response
+    # Generate visual canvas for image response
     canvas = np.zeros((800, 600, 3), dtype=np.uint8) + 245
     cv2.putText(canvas, f"Doc ID: {doc_id[:8]} - Page {page}", (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (50, 50, 50), 2)
 

@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document Processing Portal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-sky-100 via-blue-50 to-sky-100 text-gray-800 font-sans min-h-screen p-6">
+
+  <div class="max-w-4xl mx-auto space-y-6">
+
+    <!-- Title -->
+    <header class="flex justify-between items-center bg-gradient-to-r from-sky-400 via-blue-500 to-sky-500 rounded-xl px-5 py-4 shadow-md">
+      <div>
+        <h1 class="text-xl font-bold text-white">Document Processing Portal</h1>
+        <p class="text-sky-100 text-xs mt-0.5">Multi-engine OCR & document intelligence</p>
+      </div>
+      <button onclick="goToPage('history')" class="text-xs bg-white/20 hover:bg-white/30 text-white font-semibold px-3 py-1.5 rounded-full transition">History</button>
+    </header>
+
+    <!-- Step Indicator -->
+    <div id="step-indicator-wrapper" class="flex items-center justify-center gap-2 text-xs font-semibold">
+      <div id="step-indicator-1" class="flex items-center gap-1.5 px-3 py-1.5 rounded-full">
+        <span class="step-dot w-5 h-5 rounded-full flex items-center justify-center text-[10px]">1</span> Upload
+      </div>
+      <div class="w-8 h-px bg-blue-200"></div>
+      <div id="step-indicator-2" class="flex items-center gap-1.5 px-3 py-1.5 rounded-full">
+        <span class="step-dot w-5 h-5 rounded-full flex items-center justify-center text-[10px]">2</span> Preprocessing & Quality
+      </div>
+      <div class="w-8 h-px bg-blue-200"></div>
+      <div id="step-indicator-3" class="flex items-center gap-1.5 px-3 py-1.5 rounded-full">
+        <span class="step-dot w-5 h-5 rounded-full flex items-center justify-center text-[10px]">3</span> Results
+      </div>
+    </div>
+
+    <!-- ============================= PAGE 1: UPLOAD ============================= -->
+    <div id="page-1" class="bg-white p-6 rounded-lg shadow-sm border-t-4 border-sky-400 space-y-4">
+      <h2 class="text-sm font-bold text-gray-700">Upload Documents</h2>
+      <p class="text-xs text-gray-500">Drag and drop up to 10 invoices/receipts (PDF, PNG, or JPG), or click to browse. Multi-page PDFs are fully supported.</p>
+
+      <div id="dropzone" class="border-2 border-dashed border-sky-300 rounded-lg bg-sky-50 hover:bg-sky-100 transition cursor-pointer p-8 text-center">
+        <p class="text-sm font-semibold text-sky-700">Drop files here</p>
+        <p class="text-xs text-gray-400 mt-1">or click to browse (up to 10 files)</p>
+        <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg" multiple class="hidden">
+      </div>
+
+      <div id="selected-files-list" class="text-xs text-gray-600 space-y-1"></div>
+
+      <div class="flex justify-end pt-2">
+        <button id="upload-btn" class="bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold py-2 px-5 rounded-full transition disabled:opacity-50 shadow-sm">
+          Upload & Continue
+        </button>
+      </div>
+    </div>
+
+    <!-- ======================= PAGE 2: PREPROCESSING & QUALITY ======================= -->
+    <div id="page-2" class="hidden bg-white p-6 rounded-lg shadow-sm border-t-4 border-blue-400 space-y-5">
+      <div>
+        <h2 class="text-sm font-bold text-gray-700 mb-1" id="p2-filename">--</h2>
+        <p class="text-xs text-gray-400 font-mono" id="p2-doc-id">--</p>
+      </div>
+
+      <!-- Progress -->
+      <div>
+        <div class="flex justify-between text-xs mb-1">
+          <span id="p2-phase-label" class="font-semibold text-blue-700">Starting...</span>
+          <span id="p2-progress-pct" class="text-gray-400">0%</span>
+        </div>
+        <div class="w-full bg-blue-50 rounded-full h-2.5">
+          <div id="p2-progress-bar" class="bg-gradient-to-r from-sky-400 to-blue-500 h-2.5 rounded-full transition-all" style="width: 0%"></div>
+        </div>
+      </div>
+
+      <!-- Outcome banner -- appears once processing finishes -->
+      <div id="p2-status-banner" class="hidden rounded-lg p-3 text-sm font-semibold text-center"></div>
+
+      <!-- Quality Metrics -->
+      <div>
+        <h3 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Image Quality Analysis</h3>
+        <div id="p2-page-tabs" class="flex flex-wrap gap-2 mb-3 hidden"></div>
+        <div id="quality-metrics-container" class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <p class="text-gray-400 italic col-span-4">Waiting for quality analysis to complete...</p>
+        </div>
+      </div>
+
+      <div class="flex justify-between pt-2 border-t border-blue-100">
+        <button onclick="goToPage(1)" class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-4 py-1.5 rounded-full font-semibold">Back</button>
+        <button id="p2-next-btn" onclick="goToPage(3)" disabled class="text-xs bg-sky-500 hover:bg-sky-600 text-white px-5 py-1.5 rounded-full font-semibold disabled:opacity-40 disabled:cursor-not-allowed shadow-sm">Next: View Results</button>
+      </div>
+    </div>
+
+    <!-- ============================= PAGE 3: RESULTS ============================= -->
+    <div id="page-3" class="hidden bg-white p-6 rounded-lg shadow-sm border-t-4 border-cyan-500 space-y-6">
+
+      <div class="flex justify-between items-start border-b border-blue-100 pb-3">
+        <div>
+          <div class="flex items-center gap-2 mb-1">
+            <h3 id="doc-title" class="text-base font-bold text-gray-900">--</h3>
+            <span id="p3-status-badge" class="text-[10px] font-bold px-2.5 py-1 rounded-full"></span>
+          </div>
+          <p class="text-xs text-gray-400 font-mono" id="doc-id-label">--</p>
+        </div>
+        <div class="flex space-x-2">
+          <button onclick="exportDoc('json')" class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-full font-semibold">JSON</button>
+          <button onclick="exportDoc('csv')" class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-full font-semibold">CSV</button>
+        </div>
+      </div>
+
+      <!-- Page selector for multi-page documents -->
+      <div id="p3-page-tabs" class="flex flex-wrap gap-2 hidden"></div>
+
+      <!-- Original Document Preview + Header Fields -->
+      <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <div class="lg:col-span-2">
+          <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Original Document</h4>
+          <div class="border border-blue-100 rounded-lg bg-sky-50 p-2 flex items-center justify-center min-h-[200px]">
+            <img id="doc-preview-img" alt="Document preview" class="max-w-full max-h-[400px] object-contain rounded hidden">
+            <p id="doc-preview-empty" class="text-gray-400 italic text-xs">No preview available</p>
+          </div>
+        </div>
+        <div class="lg:col-span-3">
+          <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Extracted Header Fields <span class="normal-case text-gray-400 font-normal">(this page)</span></h4>
+          <div id="fields-container" class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          </div>
+        </div>
+      </div>
+
+      <!-- Line Items -->
+      <div>
+        <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Extracted Line Items <span class="normal-case text-gray-400 font-normal">(this page)</span></h4>
+        <div class="border border-blue-100 rounded-lg p-3 bg-sky-50">
+          <div class="grid grid-cols-12 gap-2 font-bold text-[11px] text-gray-600 border-b border-blue-100 pb-2 mb-2">
+            <div class="col-span-5">Description</div>
+            <div class="col-span-2 text-center">Qty</div>
+            <div class="col-span-2 text-right">Unit Price</div>
+            <div class="col-span-3 text-right">Total</div>
+          </div>
+          <div id="line-items-container" class="space-y-2 text-xs">
+          </div>
+        </div>
+      </div>
+
+      <!-- Validation & Engine Comparison -->
+      <div>
+        <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Validation Results & Engine Comparison</h4>
+        <div class="border border-blue-100 rounded-lg p-4 bg-gradient-to-br from-sky-50 to-blue-50 space-y-4">
+          <div class="bg-white rounded-lg border border-blue-100 p-4">
+            <div id="engine-bars-container" class="flex items-end justify-center gap-8 h-36">
+            </div>
+          </div>
+          <div id="validation-issues-container" class="space-y-2 text-xs">
+          </div>
+        </div>
+      </div>
+
+      <!-- Extracted Text -->
+      <div>
+        <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Extracted Text <span class="normal-case text-gray-400 font-normal">(this page)</span></h4>
+        <div id="extracted-text-container" class="text-xs">
+        </div>
+      </div>
+
+      <!-- Review Footer -->
+      <div class="border-t border-blue-100 pt-4 space-y-3">
+        <input type="text" id="reviewer-comments" placeholder="Review comments (optional)" class="w-full px-3 py-1.5 text-xs border border-blue-200 rounded focus:outline-none focus:ring-1 focus:ring-sky-400">
+        <div class="flex justify-between items-center">
+          <button onclick="goToPage(2)" class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-4 py-1.5 rounded-full font-semibold">Back</button>
+          <div class="flex space-x-2">
+            <button type="button" onclick="submitReview(false)" class="px-4 py-1.5 text-xs bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 rounded-full font-semibold">Reject</button>
+            <button type="button" onclick="submitReview(true)" class="px-5 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-full font-semibold shadow-sm">Approve</button>
+            <button type="button" onclick="resetWizard()" class="px-4 py-1.5 text-xs bg-blue-700 hover:bg-blue-800 text-white rounded-full font-semibold">Upload New Document</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ============================= HISTORY PAGE ============================= -->
+    <div id="page-history" class="hidden bg-white p-6 rounded-lg shadow-sm border-t-4 border-blue-500 space-y-4">
+      <div class="flex justify-between items-center">
+        <h2 class="text-sm font-bold text-gray-700">Document History</h2>
+        <button onclick="goToPage(1)" class="text-xs bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 px-3 py-1.5 rounded-full font-semibold">+ New Upload</button>
+      </div>
+      <div id="history-list-container" class="space-y-2 text-xs">
+        <p class="text-gray-400 italic">Loading history...</p>
+      </div>
+    </div>
+
+    <!-- ============================= BATCH QUEUE PAGE ============================= -->
+    <div id="page-batch" class="hidden bg-white p-6 rounded-lg shadow-sm border-t-4 border-sky-500 space-y-4">
+      <div class="flex justify-between items-center">
+        <div>
+          <h2 class="text-sm font-bold text-gray-700">Batch Upload Queue</h2>
+          <p class="text-xs text-gray-400 mt-0.5">Click a document once it finishes processing to view its results.</p>
+        </div>
+        <button onclick="resetBatch()" class="text-xs bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 px-3 py-1.5 rounded-full font-semibold">+ New Upload</button>
+      </div>
+      <div id="batch-list-container" class="space-y-2 text-xs"></div>
+    </div>
+
+  </div>
+
+  <style>
+    .step-dot { background: #dbeafe; color: #64748b; transition: all 0.2s; }
+    .step-active .step-dot { background: #0ea5e9; color: white; }
+    .step-active { color: #0ea5e9; }
+    .step-done .step-dot { background: #10b981; color: white; }
+  </style>
+
+  <script>
+    const API_BASE = '/documents';
+
+    let state = {
+      currentPage: 1,
+      docId: null,
+      filename: null,
+      pollTimer: null,
+      result: null,
+      viewPageIndex: 0,   // which page of a multi-page document is currently displayed
+      batchDocs: [],      // [{id, filename, status, progress}] when multiple files uploaded at once
+      batchPollTimer: null
+    };
+
+    // ---------------- Page Navigation ----------------
+
+    function goToPage(n) {
+      state.currentPage = n;
+      const pageEls = { 1: 'page-1', 2: 'page-2', 3: 'page-3', history: 'page-history', batch: 'page-batch' };
+      Object.keys(pageEls).forEach(key => {
+        document.getElementById(pageEls[key]).classList.toggle('hidden', key !== String(n));
+      });
+
+      const indicatorWrapper = document.getElementById('step-indicator-wrapper');
+      if (n === 'history') {
+        indicatorWrapper.classList.add('hidden');
+        loadHistory();
+        return;
+      }
+      if (n === 'batch') {
+        indicatorWrapper.classList.add('hidden');
+        renderBatchList();
+        return;
+      }
+      indicatorWrapper.classList.remove('hidden');
+
+      [1, 2, 3].forEach(i => {
+        const ind = document.getElementById(`step-indicator-${i}`);
+        ind.classList.remove('step-active', 'step-done');
+        if (i === n) ind.classList.add('step-active');
+        else if (i < n) ind.classList.add('step-done');
+      });
+
+      if (n === 3 && state.result) {
+        renderResultsPage();
+      }
+    }
+
+    function resetWizard() {
+      if (state.pollTimer) clearInterval(state.pollTimer);
+      if (state.batchPollTimer) clearInterval(state.batchPollTimer);
+      state = {
+        currentPage: 1, docId: null, filename: null, pollTimer: null, result: null,
+        viewPageIndex: 0, batchDocs: [], batchPollTimer: null
+      };
+      document.getElementById('file-input').value = '';
+      document.getElementById('p2-next-btn').disabled = true;
+      document.getElementById('p2-progress-bar').style.width = '0%';
+      document.getElementById('p2-progress-pct').innerText = '0%';
+      document.getElementById('p2-phase-label').innerText = 'Starting...';
+      document.getElementById('p2-status-banner').className = 'hidden';
+      document.getElementById('quality-metrics-container').innerHTML =
+        `<p class="text-gray-400 italic col-span-4">Waiting for quality analysis to complete...</p>`;
+      goToPage(1);
+    }
+
+    // Shared page-tab renderer, used on both the Quality page and Results page
+    // for documents with more than one page.
+    function renderPageTabs(containerId, totalPages) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      if (totalPages <= 1) {
+        container.classList.add('hidden');
+        container.innerHTML = '';
+        return;
+      }
+      container.classList.remove('hidden');
+      container.innerHTML = Array.from({ length: totalPages }, (_, i) => `
+        <button onclick="setViewPage(${i})" class="px-3 py-1 rounded-full text-[11px] font-semibold transition ${i === state.viewPageIndex ? 'bg-sky-500 text-white shadow-sm' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}">
+          Page ${i + 1}
+        </button>
+      `).join('');
+    }
+
+    function setViewPage(i) {
+      state.viewPageIndex = i;
+      if (state.currentPage === 2) renderQualityMetrics();
+      if (state.currentPage === 3) renderResultsPage();
+    }
+
+    // ---------------- Page 1: Upload (drag-and-drop + batch) ----------------
+
+    const fileInputEl = document.getElementById('file-input');
+    const dropzoneEl = document.getElementById('dropzone');
+    const selectedFilesListEl = document.getElementById('selected-files-list');
+
+    function updateSelectedFilesList() {
+      const files = fileInputEl.files;
+      if (!files.length) {
+        selectedFilesListEl.innerHTML = '';
+        return;
+      }
+      const names = Array.from(files).map(f => f.name);
+      selectedFilesListEl.innerHTML = `
+        <p class="font-semibold text-gray-700">${files.length} file${files.length > 1 ? 's' : ''} selected:</p>
+        <ul class="list-disc list-inside text-gray-500">${names.map(n => `<li>${n}</li>`).join('')}</ul>
+      `;
+    }
+
+    dropzoneEl.addEventListener('click', () => fileInputEl.click());
+    fileInputEl.addEventListener('change', updateSelectedFilesList);
+
+    ['dragenter', 'dragover'].forEach(evt => {
+      dropzoneEl.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzoneEl.classList.add('bg-sky-100', 'border-sky-400');
+      });
+    });
+    ['dragleave', 'dragend'].forEach(evt => {
+      dropzoneEl.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropzoneEl.classList.remove('bg-sky-100', 'border-sky-400');
+      });
+    });
+    dropzoneEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropzoneEl.classList.remove('bg-sky-100', 'border-sky-400');
+      const dropped = e.dataTransfer.files;
+      if (!dropped.length) return;
+      // Replace the file input's FileList with the dropped files so the
+      // existing upload handler works identically for click-select and drag-drop.
+      const dt = new DataTransfer();
+      Array.from(dropped).slice(0, 10).forEach(f => dt.items.add(f));
+      fileInputEl.files = dt.files;
+      updateSelectedFilesList();
+    });
+
+    document.getElementById('upload-btn').addEventListener('click', async () => {
+      const files = fileInputEl.files;
+      if (!files.length) return alert("Select at least one file first.");
+      if (files.length > 10) return alert("Please select at most 10 files.");
+
+      const formData = new FormData();
+      Array.from(files).forEach((f, i) => formData.append(`file${i + 1}`, f));
+
+      const btn = document.getElementById('upload-btn');
+      btn.disabled = true;
+      btn.innerText = "Uploading...";
+
+      try {
+        const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: formData });
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+
+        const docsArray = data.documents || [];
+        if (!docsArray.length) throw new Error("No documents returned from upload.");
+
+        if (docsArray.length === 1) {
+          // Single file -- go straight through the existing step-by-step wizard.
+          const doc = docsArray[0];
+          state.docId = doc.document_id;
+          state.filename = doc.filename || files[0].name;
+          state.viewPageIndex = 0;
+
+          document.getElementById('p2-filename').innerText = state.filename;
+          document.getElementById('p2-doc-id').innerText = `ID: ${state.docId}`;
+
+          goToPage(2);
+          pollStatus();
+        } else {
+          // Multiple files -- show a batch queue; each document is opened
+          // individually once it finishes processing.
+          state.batchDocs = docsArray.map(d => ({
+            id: d.document_id,
+            filename: d.filename || 'Untitled',
+            status: (d.status || 'queued').toLowerCase(),
+            progress: 0
+          }));
+          goToPage('batch');
+          pollBatchStatuses();
+        }
+
+        fileInputEl.value = '';
+        selectedFilesListEl.innerHTML = '';
+      } catch (err) {
+        alert("Upload failed.");
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Upload & Continue";
+      }
+    });
+
+    // ---------------- Batch Queue ----------------
+
+    const BATCH_TERMINAL_STATUSES = [
+      'completed', 'approved', 'rejected', 'failed',
+      'auto_approved', 'human_review_required'
+    ];
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // Shared entry point for History and Batch: loads a fully-processed
+    // document and lands on the Quality page (same as the normal upload
+    // flow), with "Next" already enabled since the data is ready.
+    async function loadDocumentIntoWizard(docId, filename) {
+      state.docId = docId;
+      state.filename = filename;
+      state.viewPageIndex = 0;
+
+      document.getElementById('p2-filename').innerText = filename;
+      document.getElementById('p2-doc-id').innerText = `ID: ${docId}`;
+      document.getElementById('p2-progress-bar').style.width = '100%';
+      document.getElementById('p2-progress-pct').innerText = '100%';
+      document.getElementById('p2-phase-label').innerText = 'Complete';
+
+      try {
+        const res = await fetch(`${API_BASE}/${docId}/result`);
+        if (!res.ok) {
+          alert('Could not load this document -- it may still be processing or may have failed.');
+          return;
+        }
+        state.result = await res.json();
+        renderQualityMetrics();
+        document.getElementById('p2-next-btn').disabled = false;
+
+        const info = statusDisplayInfo(state.result.status);
+        const banner = document.getElementById('p2-status-banner');
+        banner.className = `rounded-lg p-3 text-sm font-semibold text-center ${info.classes}`;
+        banner.innerText = info.label;
+
+        goToPage(2);
+      } catch (err) {
+        alert('Failed to load document.');
+      }
+    }
+
+    function renderBatchList() {
+      const container = document.getElementById('batch-list-container');
+      if (!state.batchDocs.length) {
+        container.innerHTML = `<p class="text-gray-400 italic">No documents in this batch.</p>`;
+        return;
+      }
+      container.innerHTML = state.batchDocs.map(doc => {
+        const terminal = BATCH_TERMINAL_STATUSES.includes(doc.status);
+        const clickable = terminal && doc.status !== 'failed';
+        return `
+          <div data-doc-id="${escapeHtml(doc.id)}" data-filename="${escapeHtml(doc.filename)}" class="doc-row flex justify-between items-center p-3 border border-blue-100 rounded-lg ${clickable ? 'clickable hover:bg-sky-50 hover:border-sky-200 cursor-pointer' : ''} transition">
+            <div class="flex-1">
+              <div class="font-semibold text-gray-800">${escapeHtml(doc.filename)}</div>
+              <div class="text-gray-400 text-[10px] font-mono">${escapeHtml(doc.id)}</div>
+              ${!terminal ? `
+                <div class="w-full bg-blue-50 rounded-full h-1.5 mt-1.5 max-w-xs">
+                  <div class="bg-gradient-to-r from-sky-400 to-blue-500 h-1.5 rounded-full transition-all" style="width: ${doc.progress}%"></div>
+                </div>
+              ` : ''}
+            </div>
+            <span class="text-[10px] font-bold px-2.5 py-1 rounded-full ${statusBadgeClass(doc.status)}">${doc.status.toUpperCase()}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Event delegation instead of inline onclick="" strings -- avoids the
+    // quote-escaping bug that broke every click in the History list (see below).
+    document.getElementById('batch-list-container').addEventListener('click', (e) => {
+      const row = e.target.closest('.doc-row.clickable');
+      if (!row) return;
+      loadDocumentIntoWizard(row.dataset.docId, row.dataset.filename);
+    });
+
+    function pollBatchStatuses() {
+      if (state.batchPollTimer) clearInterval(state.batchPollTimer);
+
+      state.batchPollTimer = setInterval(async () => {
+        let allTerminal = true;
+
+        await Promise.all(state.batchDocs.map(async (doc) => {
+          if (BATCH_TERMINAL_STATUSES.includes(doc.status)) return;
+          try {
+            const res = await fetch(`${API_BASE}/${doc.id}/status`);
+            if (!res.ok) return;
+            const statusData = await res.json();
+            doc.status = (statusData.status || '').toLowerCase();
+            doc.progress = statusData.progress || 0;
+          } catch (err) { /* leave as-is, retry next tick */ }
+          if (!BATCH_TERMINAL_STATUSES.includes(doc.status)) allTerminal = false;
+        }));
+
+        renderBatchList();
+        if (allTerminal) clearInterval(state.batchPollTimer);
+      }, 1500);
+    }
+
+    function resetBatch() {
+      if (state.batchPollTimer) clearInterval(state.batchPollTimer);
+      state.batchDocs = [];
+      state.batchPollTimer = null;
+      goToPage(1);
+    }
+
+    // ---------------- Page 2: Preprocessing & Quality ----------------
+
+    function phaseLabelForProgress(pct) {
+      if (pct < 30) return 'Analyzing image quality...';
+      if (pct < 85) return 'Running OCR engines (Tesseract, EasyOCR, PaddleOCR)...';
+      if (pct < 100) return 'Validating extracted fields...';
+      return 'Complete';
+    }
+
+    function pollStatus() {
+      const TERMINAL_STATUSES = [
+        'completed', 'approved', 'rejected', 'failed',
+        'auto_approved', 'human_review_required'
+      ];
+
+      state.pollTimer = setInterval(async () => {
+        try {
+          const res = await fetch(`${API_BASE}/${state.docId}/status`);
+          if (!res.ok) return;
+          const statusData = await res.json();
+          const currentStatus = (statusData.status || '').toLowerCase();
+          const progress = statusData.progress || 0;
+
+          document.getElementById('p2-progress-bar').style.width = `${progress}%`;
+          document.getElementById('p2-progress-pct').innerText = `${Math.round(progress)}%`;
+          document.getElementById('p2-phase-label').innerText = phaseLabelForProgress(progress);
+
+          if (TERMINAL_STATUSES.includes(currentStatus)) {
+            clearInterval(state.pollTimer);
+            if (currentStatus === 'failed') {
+              document.getElementById('p2-phase-label').innerText =
+                `Processing failed: ${statusData.error_message || 'Unknown error'}`;
+              const banner = document.getElementById('p2-status-banner');
+              banner.className = 'rounded-lg p-3 text-sm font-semibold text-center bg-red-50 text-red-700 border border-red-200';
+              banner.innerText = 'Processing Failed';
+              return;
+            }
+            await fetchResult();
+          }
+        } catch (err) {
+          clearInterval(state.pollTimer);
+        }
+      }, 1200);
+    }
+
+    // Maps a document's routing status to a human-readable label and color.
+    // Used for both the Page 2 outcome banner and the Page 3 status badge.
+    function statusDisplayInfo(status) {
+      const s = (status || '').toUpperCase();
+      const map = {
+        AUTO_APPROVED: { label: 'Auto-Approved', classes: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
+        HUMAN_REVIEW_REQUIRED: { label: 'Needs Human Review', classes: 'bg-amber-50 text-amber-800 border border-amber-200' },
+        APPROVED: { label: 'Approved', classes: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
+        REJECTED: { label: 'Rejected', classes: 'bg-red-50 text-red-700 border border-red-200' },
+        FAILED: { label: 'Processing Failed', classes: 'bg-red-50 text-red-700 border border-red-200' },
+        COMPLETED: { label: 'Completed', classes: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
+      };
+      return map[s] || { label: s || 'Unknown', classes: 'bg-gray-50 text-gray-600 border border-gray-200' };
+    }
+
+    async function fetchResult() {
+      try {
+        const res = await fetch(`${API_BASE}/${state.docId}/result`);
+        if (!res.ok) return;
+        state.result = await res.json();
+        renderQualityMetrics();
+        document.getElementById('p2-next-btn').disabled = false;
+
+        // Show the routing outcome immediately, without requiring a click to
+        // the Results page, so the decision is visible the moment it's known.
+        const info = statusDisplayInfo(state.result.status);
+        const banner = document.getElementById('p2-status-banner');
+        banner.className = `rounded-lg p-3 text-sm font-semibold text-center ${info.classes}`;
+        banner.innerText = info.label;
+      } catch (err) {
+        console.error("Error fetching result:", err);
+      }
+    }
+
+    function qualityBadgeClass(label) {
+      const l = (label || '').toLowerCase();
+      if (l === 'good') return 'text-emerald-700';
+      if (l === 'acceptable') return 'text-amber-600';
+      return 'text-red-600';
+    }
+
+    function renderQualityMetrics() {
+      const container = document.getElementById('quality-metrics-container');
+      const resObj = state.result.results || state.result;
+      const pages = resObj.pages_data || [];
+
+      renderPageTabs('p2-page-tabs', pages.length);
+
+      const pageData = pages[state.viewPageIndex] || pages[0];
+      if (!pageData || !pageData.quality) {
+        container.innerHTML = `<p class="text-gray-400 italic col-span-4">No quality data available for this page.</p>`;
+        return;
+      }
+
+      const q = pageData.quality;
+      const stat = (label, value, colorClass) => `
+        <div class="p-2 border border-blue-100 rounded-lg bg-white">
+          <div class="text-gray-400 uppercase text-[10px] font-bold">${label}</div>
+          <div class="${colorClass || 'text-gray-800'} font-semibold">${value}</div>
+        </div>
+      `;
+
+      container.innerHTML = [
+        stat('Quality', q.quality_label ?? 'N/A', qualityBadgeClass(q.quality_label)),
+        stat('Color Mode', q.color_mode ?? 'N/A'),
+        stat('Blur Score', q.blur_score ?? 'N/A'),
+        stat('Brightness', q.brightness ?? 'N/A'),
+        stat('Contrast', q.contrast ?? 'N/A'),
+        stat('Skew Angle', q.skew_angle !== undefined ? `${q.skew_angle}°` : 'N/A'),
+        stat('Est. DPI', q.estimated_dpi ?? 'N/A'),
+        stat('Dimensions', q.dimensions ? `${q.dimensions.width}x${q.dimensions.height}` : 'N/A'),
+      ].join('');
+    }
+
+    // ---------------- Page 3: Results ----------------
+
+    function renderResultsPage() {
+      const resObj = state.result.results || state.result;
+      const pages = resObj.pages_data || [];
+      const pageData = pages[state.viewPageIndex] || pages[0] || {};
+
+      document.getElementById('doc-title').innerText = state.filename || 'Document';
+      document.getElementById('doc-id-label').innerText = `ID: ${state.docId}`;
+
+      const statusInfo = statusDisplayInfo(state.result.status);
+      const statusBadge = document.getElementById('p3-status-badge');
+      statusBadge.className = `text-[10px] font-bold px-2.5 py-1 rounded-full ${statusInfo.classes}`;
+      statusBadge.innerText = statusInfo.label;
+
+      renderPageTabs('p3-page-tabs', pages.length);
+
+      // Original document preview (page-aware)
+      const previewImg = document.getElementById('doc-preview-img');
+      const previewEmpty = document.getElementById('doc-preview-empty');
+      previewImg.onload = () => { previewImg.classList.remove('hidden'); previewEmpty.classList.add('hidden'); };
+      previewImg.onerror = () => { previewImg.classList.add('hidden'); previewEmpty.classList.remove('hidden'); };
+      previewImg.src = `${API_BASE}/${state.docId}/image?page=${state.viewPageIndex + 1}`;
+
+      // FIX: Header fields and line items now come from THIS PAGE's own
+      // consensus (pages_data[i].consensus), which jobs.py already computes
+      // per page -- previously these read the document-wide aggregate
+      // (consensus_data) regardless of which page tab was selected.
+      const fields = (pageData && pageData.consensus) || resObj.consensus_data || resObj.field_consensus || resObj;
+      const fieldsContainer = document.getElementById('fields-container');
+      const fieldKeys = Object.keys(fields).filter(k => k !== 'line_items' && typeof fields[k] === 'object' && fields[k] !== null);
+
+      if (fieldKeys.length === 0) {
+        fieldsContainer.innerHTML = `<p class="text-gray-400 italic col-span-2">No header fields extracted on this page.</p>`;
+      } else {
+        fieldsContainer.innerHTML = fieldKeys.map(key => {
+          const f = fields[key] || {};
+          const value = f.value !== undefined ? f.value : (typeof f === 'string' ? f : '');
+          const sources = Array.isArray(f.sources) ? f.sources : [];
+          const isFlagged = sources.length > 0 && sources.length < 2;
+
+          return `
+            <div class="flex flex-col p-2 border rounded-lg ${isFlagged ? 'border-amber-300 bg-amber-50' : 'border-blue-100 bg-white'}">
+              <div class="flex justify-between items-center mb-1">
+                <span class="font-bold text-gray-700 capitalize">${key.replace(/_/g, ' ')}</span>
+                ${isFlagged ? '<span class="text-[9px] bg-amber-200 text-amber-900 px-1 rounded-full font-semibold">Low agreement</span>' : ''}
+              </div>
+              <input type="text" data-field="${key}" value="${value !== null && value !== undefined ? value : ''}" class="p-1.5 border border-blue-100 rounded focus:outline-none focus:ring-1 focus:ring-sky-400 bg-white text-xs">
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Line items -- also from this page's own consensus now
+      const lineItemsContainer = document.getElementById('line-items-container');
+      let lineItems = fields.line_items;
+      if (lineItems && !Array.isArray(lineItems)) {
+        lineItems = lineItems.value;
+      }
+      lineItems = lineItems || [];
+      if (!Array.isArray(lineItems) && typeof lineItems === 'object') {
+        lineItems = Object.values(lineItems);
+      }
+
+      if (!lineItems || lineItems.length === 0) {
+        lineItemsContainer.innerHTML = `<p class="text-gray-400 italic text-center py-2">No line items extracted on this page.</p>`;
+      } else {
+        lineItemsContainer.innerHTML = lineItems.map((item, idx) => `
+          <div class="grid grid-cols-12 gap-2 items-center">
+            <div class="col-span-5">
+              <input type="text" data-line-item="${idx}" data-key="description" value="${item.description || ''}" class="w-full p-1 border border-blue-100 rounded bg-white">
+            </div>
+            <div class="col-span-2">
+              <input type="number" data-line-item="${idx}" data-key="quantity" value="${item.quantity || 1}" class="w-full p-1 border border-blue-100 rounded bg-white text-center">
+            </div>
+            <div class="col-span-2">
+              <input type="number" step="0.01" data-line-item="${idx}" data-key="unit_price" value="${item.unit_price || item.price || 0}" class="w-full p-1 border border-blue-100 rounded bg-white text-right">
+            </div>
+            <div class="col-span-3">
+              <input type="number" step="0.01" data-line-item="${idx}" data-key="line_total" value="${item.line_total || item.total || 0}" class="w-full p-1 border border-blue-100 rounded bg-white text-right">
+            </div>
+          </div>
+        `).join('');
+      }
+
+      renderValidationAndEngineComparison(resObj, pages);
+      renderExtractedText(pages);
+    }
+
+    // Distinct blue-family shades per engine so bars stay identifiable while
+    // keeping the overall palette consistent with the light-blue theme.
+    const ENGINE_COLORS = {
+      tesseract: 'bg-sky-500',
+      easyocr: 'bg-blue-500',
+      paddleocr: 'bg-cyan-500'
+    };
+    const ENGINE_LABELS = { tesseract: 'Tesseract', easyocr: 'EasyOCR', paddleocr: 'PaddleOCR' };
+
+    function renderValidationAndEngineComparison(resObj, pages) {
+      const pageData = pages[state.viewPageIndex] || pages[0];
+      const engineOutputs = (pageData && pageData.engine_outputs) ? pageData.engine_outputs : {};
+
+      const barsContainer = document.getElementById('engine-bars-container');
+      const engineKeys = Object.keys(engineOutputs);
+      const BAR_TRACK_HEIGHT = 100; // px, must match the inline style below
+
+      if (!engineKeys.length) {
+        barsContainer.innerHTML = `<p class="text-gray-400 italic">No engine data available.</p>`;
+      } else {
+        barsContainer.innerHTML = engineKeys.map(key => {
+          const eng = engineOutputs[key] || {};
+          const ok = (eng.status || '').toUpperCase() === 'SUCCESS';
+          const pct = ok && typeof eng.confidence === 'number' ? Math.round(eng.confidence * 100) : 0;
+          const label = ENGINE_LABELS[key] || key;
+          const barColor = ok ? (ENGINE_COLORS[key] || 'bg-sky-500') : 'bg-red-400';
+          const fillHeight = Math.max(2, Math.round((pct / 100) * BAR_TRACK_HEIGHT));
+
+          return `
+            <div class="flex flex-col items-center w-20">
+              <span class="text-xs font-bold text-gray-700 mb-1">${pct}%</span>
+              <div class="w-10 bg-blue-50 rounded-t-md flex items-end overflow-hidden" style="height:${BAR_TRACK_HEIGHT}px;">
+                <div class="${barColor} w-full rounded-t-md transition-all" style="height:${fillHeight}px;"></div>
+              </div>
+              <span class="text-[10px] font-semibold text-gray-600 mt-2 text-center">${label}</span>
+              ${!ok ? '<span class="text-[9px] text-red-500 font-semibold">Failed</span>' : ''}
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Validation issues -- document-level (aggregated by the backend validator
+      // across all pages), not per-page.
+      const validationContainer = document.getElementById('validation-issues-container');
+      const issues = resObj.validation_issues || [];
+
+      if (!issues.length) {
+        validationContainer.innerHTML = `<p class="text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">No validation issues found -- all business rule checks passed.</p>`;
+      } else {
+        validationContainer.innerHTML = issues.map(issue => {
+          const severity = (issue.severity || 'WARNING').toUpperCase();
+          const sevClass = severity === 'HIGH' ? 'bg-red-50 border-red-200 text-red-800'
+            : severity === 'MEDIUM' ? 'bg-amber-50 border-amber-200 text-amber-800'
+            : 'bg-gray-50 border-gray-200 text-gray-700';
+          return `
+            <div class="border rounded-lg p-2 ${sevClass}">
+              <span class="font-bold">[${severity}]</span> ${issue.field ? `<span class="font-semibold">${issue.field}:</span>` : ''} ${issue.message || issue.issue_type || ''}
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    function renderExtractedText(pages) {
+      const pageData = pages[state.viewPageIndex] || pages[0];
+      const container = document.getElementById('extracted-text-container');
+      const engineOutputs = (pageData && pageData.engine_outputs) ? pageData.engine_outputs : {};
+
+      const successfulEntries = Object.entries(engineOutputs)
+        .filter(([, eng]) => (eng.status || '').toUpperCase() === 'SUCCESS' && eng.raw_text && eng.raw_text.trim());
+
+      if (!successfulEntries.length) {
+        container.innerHTML = `<p class="text-gray-400 italic">No text could be extracted from this page.</p>`;
+        return;
+      }
+
+      successfulEntries.sort((a, b) => (b[1].confidence || 0) - (a[1].confidence || 0));
+      const bestText = successfulEntries[0][1].raw_text;
+
+      container.innerHTML = `
+        <div class="border border-blue-100 rounded-lg bg-white">
+          <pre class="p-3 whitespace-pre-wrap break-words text-[11px] text-gray-700 max-h-80 overflow-y-auto">${bestText.replace(/</g, '&lt;')}</pre>
+        </div>
+      `;
+    }
+
+    // ---------------- History ----------------
+
+    function statusBadgeClass(s) {
+      const l = (s || '').toLowerCase();
+      if (['completed', 'approved', 'auto_approved'].includes(l)) return 'bg-emerald-100 text-emerald-800';
+      if (['queued', 'processing', 'pending'].includes(l)) return 'bg-amber-100 text-amber-800';
+      if (['failed', 'rejected'].includes(l)) return 'bg-red-100 text-red-800';
+      if (l === 'human_review_required') return 'bg-orange-100 text-orange-800';
+      return 'bg-gray-100 text-gray-600';
+    }
+
+    async function loadHistory() {
+      const container = document.getElementById('history-list-container');
+      container.innerHTML = `<p class="text-gray-400 italic">Loading history...</p>`;
+      try {
+        const res = await fetch(API_BASE);
+        if (!res.ok) throw new Error();
+        const docs = await res.json();
+
+        if (!docs.length) {
+          container.innerHTML = `<p class="text-gray-400 italic">No documents processed yet.</p>`;
+          return;
+        }
+
+        container.innerHTML = docs.slice().reverse().map(doc => `
+          <div data-doc-id="${escapeHtml(doc.document_id)}" data-filename="${escapeHtml(doc.filename || 'Untitled')}" class="doc-row flex justify-between items-center p-3 border border-blue-100 rounded-lg hover:bg-sky-50 hover:border-sky-200 cursor-pointer transition">
+            <div>
+              <div class="font-semibold text-gray-800">${escapeHtml(doc.filename || 'Untitled')}</div>
+              <div class="text-gray-400 text-[10px] font-mono">${escapeHtml(doc.document_id)}</div>
+            </div>
+            <span class="text-[10px] font-bold px-2.5 py-1 rounded-full ${statusBadgeClass(doc.status)}">${(doc.status || 'UNKNOWN').toUpperCase()}</span>
+          </div>
+        `).join('');
+      } catch (err) {
+        container.innerHTML = `<p class="text-red-500 italic">Failed to load history.</p>`;
+      }
+    }
+
+    // FIX: previously used onclick="openHistoryDocument('id', ${JSON.stringify(filename)})"
+    // built directly into the HTML string. JSON.stringify wraps the filename in double
+    // quotes, and since the onclick="..." attribute is ALSO delimited by double quotes,
+    // the browser read the embedded quote as the end of the attribute -- silently breaking
+    // the click handler for every single row, regardless of filename. Event delegation
+    // with data-* attributes (read via .dataset) sidesteps quoting entirely.
+    document.getElementById('history-list-container').addEventListener('click', (e) => {
+      const row = e.target.closest('.doc-row');
+      if (!row) return;
+      loadDocumentIntoWizard(row.dataset.docId, row.dataset.filename);
+    });
+
+    // ---------------- Review / Export ----------------
+
+    async function submitReview(approved) {
+      if (!state.docId) return;
+
+      const fieldInputs = document.querySelectorAll('#fields-container input[data-field]');
+      const fieldCorrections = [];
+      fieldInputs.forEach(input => {
+        fieldCorrections.push({
+          field_name: input.getAttribute('data-field'),
+          new_value: input.value,
+          reason: "User manual update"
+        });
+      });
+
+      const lineItemRows = {};
+      const lineInputs = document.querySelectorAll('#line-items-container input[data-line-item]');
+      lineInputs.forEach(input => {
+        const idx = input.getAttribute('data-line-item');
+        const key = input.getAttribute('data-key');
+        if (!lineItemRows[idx]) lineItemRows[idx] = {};
+        lineItemRows[idx][key] = key === 'description' ? input.value : parseFloat(input.value) || 0;
+      });
+
+      const lineItemCorrections = Object.values(lineItemRows);
+
+      try {
+        const res = await fetch(`${API_BASE}/${state.docId}/review`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            approval_status: approved ? "APPROVED" : "REJECTED",
+            reviewer_id: "OPERATOR",
+            field_corrections: fieldCorrections,
+            line_item_corrections: lineItemCorrections
+          })
+        });
+
+        if (!res.ok) throw new Error();
+        alert(`Review Saved: ${approved ? 'APPROVED' : 'REJECTED'}`);
+
+        // Reflect the new status immediately in the badge without a full reload.
+        if (state.result) state.result.status = approved ? 'APPROVED' : 'REJECTED';
+        const statusInfo = statusDisplayInfo(approved ? 'APPROVED' : 'REJECTED');
+        const statusBadge = document.getElementById('p3-status-badge');
+        statusBadge.className = `text-[10px] font-bold px-2.5 py-1 rounded-full ${statusInfo.classes}`;
+        statusBadge.innerText = statusInfo.label;
+      } catch (err) {
+        alert("Failed to submit review.");
+      }
+    }
+
+    function exportDoc(format) {
+      if (!state.docId) return;
+      window.open(`${API_BASE}/${state.docId}/export?format=${format}`, '_blank');
+    }
+
+    // ---------------- Init ----------------
+    goToPage(1);
+  </script>
+</body>
+</html>

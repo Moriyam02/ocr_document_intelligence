@@ -1,6 +1,8 @@
 from typing import Any, Dict, List
 from pydantic import BaseModel
 
+ENGINE_KEYS = {"tesseract", "easyocr", "paddleocr", "ocr_results", "engines", "metadata"}
+
 
 class ValidationIssue(BaseModel):
     field: str
@@ -16,6 +18,9 @@ class DataValidator:
         issues: List[ValidationIssue] = []
 
         for field_name, data in field_consensus.items():
+            if field_name in ENGINE_KEYS:
+                continue
+
             if hasattr(data, "model_dump"):
                 data_dict = data.model_dump()
             elif hasattr(data, "dict"):

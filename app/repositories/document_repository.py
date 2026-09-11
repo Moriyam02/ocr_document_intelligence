@@ -1,10 +1,24 @@
 import uuid
 import logging
+import json
+import numpy as np
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from app.models.document import Document
 
 logger = logging.getLogger(__name__)
+
+
+# Custom JSON encoder to convert NumPy data types to standard Python types
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (np.integer, np.int32, np.int64)):
+            return int(obj)
+        if isinstance(obj, (np.floating, np.float32, np.float64)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 
 class DocumentRepository:
@@ -14,7 +28,6 @@ class DocumentRepository:
         self.db = db
 
     def create_document(self, filename: str, **kwargs) -> Document:
-        """Creates a new document record in PENDING status."""
         doc_id = str(uuid.uuid4())
         doc = Document(
             id=doc_id,
@@ -29,11 +42,9 @@ class DocumentRepository:
         return doc
 
     def get_document(self, doc_id: str) -> Optional[Document]:
-        """Retrieves a document by its primary key ID."""
         return self.db.query(Document).filter(Document.id == doc_id).first()
 
     def list_documents(self) -> List[Document]:
-        """Retrieves all documents."""
         return self.db.query(Document).all()
 
     def update_status(
@@ -43,7 +54,6 @@ class DocumentRepository:
         progress: float = 0.0, 
         error: Optional[str] = None
     ) -> Optional[Document]:
-        """Updates execution status, progress percentage, and error messages."""
         doc = self.get_document(doc_id)
         if doc:
             doc.status = status
@@ -63,7 +73,12 @@ class DocumentRepository:
         validation_issues: List[Dict[str, Any]],
         routing_decision: Dict[str, Any]
     ) -> Optional[Document]:
-        """Saves final 3-engine processing results to the database."""
+        # Clean numpy types before sending to the database
+        pages_data = json.loads(json.dumps(pages_data, cls=NumpyEncoder))
+        consensus_data = json.loads(json.dumps(consensus_data, cls=NumpyEncoder))
+        validation_issues = json.loads(json.dumps(validation_issues, cls=NumpyEncoder))
+        routing_decision = json.loads(json.dumps(routing_decision, cls=NumpyEncoder))
+
         doc = self.get_document(doc_id)
         if doc:
             doc.total_pages = total_pages
@@ -73,14 +88,13 @@ class DocumentRepository:
             doc.consensus_data = consensus_data
             doc.validation_issues = validation_issues
             doc.routing_decision = routing_decision
-            doc.overall_confidence = routing_decision.get("overall_confidence", 0.0)
+            doc.overall_confidence = routing_decision.get("overall_confidence", routing_decision.get("confidence_score", 0.0))
             doc.routing_reason = routing_decision.get("routing_reason", "")
             self.db.commit()
             self.db.refresh(doc)
         return doc
 
     def get_processing_results(self, doc_id: str) -> Dict[str, Any]:
-        """Formats and returns structured results for API response."""
         doc = self.get_document(doc_id)
         if not doc:
             return {}

@@ -1,147 +1,269 @@
+import os
+import uuid
 import logging
-from typing import Dict, Any, List, Optional
-import cv2
-import fitz  # PyMuPDF
+import pymupdf as fitz
 import numpy as np
 from PIL import Image
+from typing import Dict, Any, List, Union, Optional
+from fastapi import UploadFile
 
 from app.core.database import SessionLocal
 from app.repositories.document_repository import DocumentRepository
+from app.services.ocr.consensus import OCRConsensusEngine
+from app.services.extraction.parser import FieldExtractor
+from app.services.validation.rules import BusinessRulesValidator
+from app.services.validation.confidence_router import RoutingEngine
+# ADD: wire in the quality/preprocessing services that were previously being
+# passed into process_document_background() from main.py but silently
+# discarded via **kwargs and never actually used.
 from app.services.preprocessing.quality import QualityAnalyzer
 from app.services.preprocessing.pipeline import ImagePreprocessor
-from app.services.extraction.parser import FieldExtractor
-from app.services.extraction.table import TableExtractor
-from app.services.extraction.layout import LayoutAnalyzer
 
 logger = logging.getLogger(__name__)
 
+# Storage directory for local uploads
+UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-class JobManager:
-    """In-memory file store and job management singleton."""
 
+class JobProcessor:
     def __init__(self):
-        self._file_store: Dict[str, bytes] = {}
+        self.consensus_engine = OCRConsensusEngine()
+        self.field_extractor = FieldExtractor()
+        self.validator = BusinessRulesValidator()
+        self.router = RoutingEngine()
+        self.quality_analyzer = QualityAnalyzer()
+        self.image_processor = ImagePreprocessor()
+        # Memory map store for quick byte access: doc_id -> raw bytes
+        self._memory_store: Dict[str, bytes] = {}
+        # Path map store: doc_id -> local disk path
+        self._path_store: Dict[str, str] = {}
 
-    def store_file(self, doc_id: str, file_bytes: bytes):
-        self._file_store[doc_id] = file_bytes
+    def store_file(self, doc_id: str, contents: Union[bytes, UploadFile, str], *args, **kwargs) -> str:
+        """
+        Stores document bytes/files mapped directly by document ID (`doc_id`).
+        Supports bytes (from main.py), UploadFile objects, or disk path strings.
+        """
+        saved_filename = f"{doc_id}.pdf"
+        file_path = os.path.join(UPLOAD_DIR, saved_filename)
+
+        if isinstance(contents, bytes):
+            self._memory_store[doc_id] = contents
+            with open(file_path, "wb") as f:
+                f.write(contents)
+        elif hasattr(contents, "file"):
+            raw_bytes = contents.file.read()
+            contents.file.seek(0)
+            self._memory_store[doc_id] = raw_bytes
+            with open(file_path, "wb") as f:
+                f.write(raw_bytes)
+        elif isinstance(contents, str) and os.path.exists(contents):
+            file_path = contents
+            with open(file_path, "rb") as f:
+                self._memory_store[doc_id] = f.read()
+
+        self._path_store[doc_id] = file_path
+        return file_path
 
     def get_file(self, doc_id: str) -> Optional[bytes]:
-        return self._file_store.get(doc_id)
+        """
+        Retrieves file bytes for visual preview or export endpoints in main.py.
+        """
+        if doc_id in self._memory_store:
+            return self._memory_store[doc_id]
 
-    def remove_file(self, doc_id: str):
-        self._file_store.pop(doc_id, None)
+        file_path = self.get_file_path(doc_id)
+        if file_path and os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                bytes_data = f.read()
+                self._memory_store[doc_id] = bytes_data
+                return bytes_data
 
+        return None
 
-job_manager = JobManager()
+    def get_file_path(self, doc_id: str) -> Optional[str]:
+        """
+        Resolves local disk file path for a given doc_id.
+        """
+        if doc_id in self._path_store and os.path.exists(self._path_store[doc_id]):
+            return self._path_store[doc_id]
 
+        # Search upload folder for matching file prefix
+        if os.path.exists(UPLOAD_DIR):
+            for fname in os.listdir(UPLOAD_DIR):
+                if fname.startswith(str(doc_id)):
+                    full_p = os.path.join(UPLOAD_DIR, fname)
+                    self._path_store[doc_id] = full_p
+                    return full_p
 
-def render_pdf_to_images(file_bytes: bytes) -> List[Image.Image]:
-    """Renders PDF bytes directly to PIL Images in-memory using PyMuPDF."""
-    images = []
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    for page in doc:
-        pix = page.get_pixmap()
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        images.append(img)
-    doc.close()
-    return images
+        return None
 
+    def _convert_pdf_to_images(self, file_path: str) -> List[Image.Image]:
+        images = []
+        doc = fitz.open(file_path)
+        for page in doc:
+            pix = page.get_pixmap(dpi=200)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            images.append(img)
+        doc.close()
+        return images
 
-def pil_to_cv2(pil_image: Image.Image) -> np.ndarray:
-    """Converts PIL Image instance to OpenCV (BGR) numpy format."""
-    open_cv_image = np.array(pil_image)
-    if open_cv_image.ndim == 3 and open_cv_image.shape[2] == 3:
-        return cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2BGR)
-    return open_cv_image
+    @staticmethod
+    def _detect_color_mode(img: Image.Image) -> str:
+        """Cheap heuristic: compares RGB channels to flag scanned grayscale/B&W
+        pages vs true color images, for display on the quality-check page."""
+        try:
+            arr = np.array(img.convert("RGB")).astype(int)
+            channel_diff = np.abs(arr[..., 0] - arr[..., 1]) + np.abs(arr[..., 1] - arr[..., 2])
+            return "Grayscale" if channel_diff.mean() < 3.0 else "Color"
+        except Exception:
+            return "Unknown"
 
+    def process_document_job(self, document_id: str, file_path: Optional[str] = None):
+        logger.info(f"[JOB START] Processing Document ID: {document_id}")
+        db = SessionLocal()
+        repo = DocumentRepository(db)
 
-def process_document_background(
-    doc_id: str,
-    poppler_path: Optional[str],
-    quality_analyzer: Any,
-    image_processor: Any,
-    consensus_engine: Any,
-    data_validator: Any,
-    routing_engine: Any
-):
-    """Background task executing multi-engine OCR and saving structured results."""
-    logger.info(f"[JOB START] Processing Document ID: {doc_id}")
+        try:
+            repo.update_status(doc_id=document_id, status="PROCESSING", progress=10.0)
 
-    db = SessionLocal()
-    repo = DocumentRepository(db)
+            # Resolve path if not explicitly provided
+            if not file_path:
+                file_path = self.get_file_path(document_id)
 
-    qa = quality_analyzer or QualityAnalyzer()
-    ip = image_processor or ImagePreprocessor()
-    field_extractor = FieldExtractor()
-    table_extractor = TableExtractor()
-    layout_analyzer = LayoutAnalyzer()
+            if not file_path or not os.path.exists(file_path):
+                raise FileNotFoundError(f"File path for document {document_id} could not be located on disk.")
 
-    try:
-        file_bytes = job_manager.get_file(doc_id)
-        if not file_bytes:
-            raise ValueError(f"No file bytes found for doc_id: {doc_id}")
+            if file_path.lower().endswith(".pdf"):
+                images = self._convert_pdf_to_images(file_path)
+            else:
+                with Image.open(file_path) as img:
+                    images = [img.convert("RGB")]
 
-        pil_images = render_pdf_to_images(file_bytes)
-        total_pages = len(pil_images)
+            total_pages = len(images)
+            pages_data = []
+            consolidated_consensus: Dict[str, Any] = {}
 
-        pages_data = []
+            for idx, img in enumerate(images):
+                page_num = idx + 1
+                logger.info(f"Processing Page {page_num}/{total_pages} for Document ID: {document_id}")
 
-        for idx, page_img in enumerate(pil_images, start=1):
-            quality_report = qa.analyze(page_img)
-            recommended_profile = quality_report.get("recommended_profile", "BASIC")
+                # --- STEP 1: Quality analysis (ADD: this was previously never run) ---
+                quality_report = self.quality_analyzer.analyze(img)
+                quality_report["color_mode"] = self._detect_color_mode(img)
 
-            processed_page_img = ip.preprocess(page_img, profile=recommended_profile)
-            engine_outputs = consensus_engine.run_all_engines(processed_page_img)
+                quality_progress = 10 + int(20 * (page_num / total_pages))
+                repo.update_status(doc_id=document_id, status="PROCESSING", progress=float(quality_progress))
 
-            extracted_fields_by_engine: Dict[str, Dict[str, Any]] = {}
-            for engine_name, output in engine_outputs.items():
-                parsed_schema = field_extractor.parse_fields(output)
-                extracted_fields_by_engine[engine_name] = parsed_schema.model_dump()
+                # --- STEP 2: Preprocessing (ADD: previously computed but never applied) ---
+                recommended_profile = quality_report.get("recommended_profile", "BASIC")
+                try:
+                    preprocessed_img = self.image_processor.apply_profile(img, recommended_profile)
+                except Exception as prep_err:
+                    logger.warning(f"Preprocessing failed for page {page_num}, using original image: {prep_err}")
+                    preprocessed_img = img
 
-            extracted_line_items_by_engine: Dict[str, List[Dict[str, Any]]] = {}
-            for engine_name, output in engine_outputs.items():
-                items = table_extractor.extract_line_items_from_engine_output(output)
-                extracted_line_items_by_engine[engine_name] = [item.model_dump() for item in items]
+                # --- STEP 3: Multi-engine OCR ---
+                engine_outputs = self.consensus_engine.run_all_engines(preprocessed_img)
+                extracted_candidates = self.field_extractor.build_candidate_dict_from_engines(engine_outputs)
+                page_consensus = self.consensus_engine.compute_field_consensus(
+                    engine_outputs, extracted_candidates
+                )
 
-            field_consensus = consensus_engine.compute_field_consensus(
-                engine_outputs, extracted_fields_by_engine
+                ocr_progress = 30 + int(55 * (page_num / total_pages))
+                repo.update_status(doc_id=document_id, status="PROCESSING", progress=float(ocr_progress))
+
+                for field_name, field_data in page_consensus.items():
+                    if field_data.get("value") is not None:
+                        consolidated_consensus[field_name] = field_data
+
+                # Format engine outputs to retain raw extracted text + confidence
+                formatted_engine_outputs = {}
+                for eng, res in engine_outputs.items():
+                    if isinstance(res, dict):
+                        formatted_engine_outputs[eng] = {
+                            "status": res.get("status", "SUCCESS" if not res.get("error") else "FAILED"),
+                            "raw_text": res.get("text") or res.get("raw_text") or res.get("full_text") or "",
+                            "detected_boxes": res.get("boxes") or res.get("lines") or [],
+                            "confidence": res.get("confidence", 0.0),
+                            "error": res.get("error")
+                        }
+                    else:
+                        formatted_engine_outputs[eng] = {
+                            "status": "SUCCESS" if res else "FAILED",
+                            "raw_text": str(res) if res else "",
+                            "confidence": 0.0,
+                            "error": None
+                        }
+
+                pages_data.append({
+                    "page_number": page_num,
+                    "quality": quality_report,
+                    "preprocessing_profile": recommended_profile,
+                    "engine_outputs": formatted_engine_outputs,
+                    "consensus": page_consensus
+                })
+
+            # --- STEP 4: Validation & routing ---
+            repo.update_status(doc_id=document_id, status="PROCESSING", progress=90.0)
+
+            validation_issues = self.validator.validate(consolidated_consensus)
+            routing_decision = self.router.evaluate(consolidated_consensus, validation_issues)
+
+            if "overall_confidence" not in routing_decision:
+                routing_decision["overall_confidence"] = routing_decision.get("confidence_score", 0.0)
+
+            serialized_issues = []
+            for issue in validation_issues:
+                if hasattr(issue, "model_dump"):
+                    serialized_issues.append(issue.model_dump())
+                elif hasattr(issue, "dict"):
+                    serialized_issues.append(issue.dict())
+                else:
+                    serialized_issues.append(issue)
+
+            repo.save_processing_results(
+                doc_id=document_id,
+                total_pages=total_pages,
+                pages_data=pages_data,
+                consensus_data=consolidated_consensus,
+                validation_issues=serialized_issues,
+                routing_decision=routing_decision
             )
 
-            pages_data.append({
-                "page": idx,
-                "quality_report": quality_report,
-                "preprocessing_profile_used": recommended_profile,
-                "engine_outputs": engine_outputs,
-                "parsed_fields": extracted_fields_by_engine,
-                "line_items": extracted_line_items_by_engine,
-                "field_consensus": field_consensus,
-            })
+            logger.info(f"[JOB COMPLETE] Document ID: {document_id} processed successfully.")
 
-        # Run Data Validation Rules
-        validation_issues = data_validator.validate(pages_data)
+        except Exception as e:
+            logger.exception(f"[JOB ERROR] Document ID: {document_id} failed: {e}")
+            try:
+                db.rollback()
+            except Exception as rollback_err:
+                logger.error(f"Rollback failed: {rollback_err}")
 
-        # Consolidate Consensus
-        consolidated_consensus = {}
-        for p in pages_data:
-            consolidated_consensus.update(p.get("field_consensus", {}))
+            repo.update_status(
+                doc_id=document_id,
+                status="FAILED",
+                progress=100.0,
+                error=str(e)
+            )
+        finally:
+            db.close()
 
-        routing_decision = routing_engine.evaluate(consolidated_consensus, validation_issues)
 
-        # Persist structured output to database
-        repo.save_processing_results(
-            doc_id,
-            total_pages,
-            pages_data,
-            consolidated_consensus,
-            validation_issues,
-            routing_decision
-        )
+# Singleton instance shared across FastAPI
+job_manager = JobProcessor()
 
-        logger.info(f"[JOB COMPLETE] Document ID: {doc_id} processed successfully.")
 
-    except Exception as e:
-        logger.error(f"[JOB FAILED] Document ID {doc_id}: {str(e)}", exc_info=True)
-        repo.update_status(doc_id, status="FAILED", error=str(e))
-    finally:
-        db.close()
-        job_manager.remove_file(doc_id)
+def process_document_background(doc_id: str = None, document_id: str = None, file_path: str = None, *args, **kwargs):
+    """
+    Background worker wrapper matching `main.py` signatures.
+    Silently consumes extra pipeline service dependencies passed by main.py.
+    """
+    target_id = doc_id or document_id
+    job_manager.process_document_job(document_id=target_id, file_path=file_path)
+
+
+def process_document_job(doc_id: str = None, document_id: str = None, file_path: str = None, *args, **kwargs):
+    """Alias for backwards compatibility."""
+    target_id = doc_id or document_id
+    job_manager.process_document_job(document_id=target_id, file_path=file_path)

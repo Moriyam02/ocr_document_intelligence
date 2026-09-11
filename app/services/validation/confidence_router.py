@@ -3,6 +3,8 @@ from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
+ENGINE_KEYS = {"tesseract", "easyocr", "paddleocr", "ocr_results", "engines", "metadata"}
+
 
 class RoutingEngine:
     """Evaluates multi-engine confidence scores, agreement ratios, and validation issues
@@ -18,9 +20,10 @@ class RoutingEngine:
         validation_issues: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Calculates overall consensus confidence and determines HITL routing status."""
-        # Handles both consensus_data={"field_consensus": {...}} and direct field_consensus dictionary
         if "field_consensus" in consensus_data and isinstance(consensus_data["field_consensus"], dict):
             field_consensus = consensus_data["field_consensus"]
+        elif "consensus" in consensus_data and isinstance(consensus_data["consensus"], dict):
+            field_consensus = consensus_data["consensus"]
         else:
             field_consensus = consensus_data
 
@@ -37,14 +40,15 @@ class RoutingEngine:
         confidence_scores = []
 
         for field_name, info in field_consensus.items():
-            if not isinstance(info, dict):
+            if field_name in ENGINE_KEYS:
                 continue
 
-            conf = info.get("confidence", 0.0)
-            confidence_scores.append(conf)
+            if isinstance(info, dict):
+                conf = info.get("confidence", 0.0)
+                confidence_scores.append(conf)
 
-            if conf < self.confidence_threshold or info.get("flagged_for_review", False):
-                flagged_fields.append(field_name)
+                if conf < self.confidence_threshold or info.get("flagged_for_review", False):
+                    flagged_fields.append(field_name)
 
         overall_confidence = (
             round(sum(confidence_scores) / len(confidence_scores), 2)
